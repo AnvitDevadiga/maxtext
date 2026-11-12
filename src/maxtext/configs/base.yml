@@ -430,6 +430,7 @@ defer_norm_grad_allreduce: false # defer per-layer RMSNorm and QK-norm scale gra
 moe_unsliced_prefused_wi: false # when true (with prefuse_moe_weights=true and sparse_matmul=true), pass the fused wi [E, emb, 2*mlp] across shard_map as a single operand (w1_kernel=None) instead of slicing into w0/w1 and re-concatenating inside gmm_up. requires tensor parallelism = 1.
 use_gather_mosaic_kernel: false # whether to use a custom mosaic kernel for token gather ops
 ragged_unsort_spread_masked_indices: false # bit-identical: masked slots of the count-index unsort gather read distinct entries, not entry 0
+moe_sc_gather_reduce: false # sparse_matmul without the ring-of-experts ragged sort or moe_use_fused_gmm3d: gather tokens in expert order and run the top-k sums (dispatch backward, and the combine when it is a plain sum) on the SparseCore gather-reduce kernel on TPU7x; f32 TensorCore sum for shapes it cannot take and other chips. With expert parallelism 1, no mlp_bias and a non-Llama4 model, routing weights are applied before wo so the combine is a plain sum.
 ragged_gather_fallback: false # when true, unconditionally use the JAX reference implementation instead of the
                               # ragged gather SparseCore kernel. When false (default), use the SparseCore kernel.
 ragged_gather_reduce_fallback: false # when true, unconditionally use the JAX reference implementation instead of the
