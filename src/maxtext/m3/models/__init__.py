@@ -82,7 +82,9 @@ MODEL_SUPPORTED_MESH_AXES: dict[str, tuple[str, ...]] = {
     "qwen3.8-flash-next-mini": ("data", "fsdp", "fsdp_transpose", "tensor", "tensor_sequence", "expert"),
 }
 MODEL_EXPLICIT_SHARDING_SUPPORT: frozenset[str] = frozenset({"qwen3-0.6b"})
-MODEL_MOE_EXECUTOR_SUPPORT: frozenset[str] = frozenset({"qwen3.8-flash-next", "qwen3.8-flash-next-mini"})
+MODEL_MOE_EXECUTOR_SUPPORT: frozenset[str] = frozenset(
+    {"glm5.3-flash", "granite-3.0-1b-a400m", "granitemoe", "qwen3.8-flash-next", "qwen3.8-flash-next-mini"}
+)
 
 
 def _unsupported_model_mesh_settings(config) -> dict[str, object]:

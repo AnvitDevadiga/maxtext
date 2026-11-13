@@ -25,7 +25,7 @@ from maxtext.m3.models import glm5_3_flash
 from maxtext.m3.models.glm5_3_flash import modeling_glm5_3_flash
 from tests.unit.m3.conformance import spec
 
-_BATCH_SIZE = 2
+_BATCH_SIZE = 4
 _SEQ_LEN = 8
 _ROW1_VALID_LEN = 7
 _VOCAB_SIZE = 256
@@ -183,7 +183,7 @@ def _build_glm5_batch(
   )
   col_idx = jnp.arange(_SEQ_LEN, dtype=jnp.int32)
   row_lengths = jnp.array(
-      [_SEQ_LEN, _ROW1_VALID_LEN],
+      [_SEQ_LEN, _ROW1_VALID_LEN] * (_BATCH_SIZE // 2),
       dtype=jnp.int32,
   )[:, None]
   segment_ids = (col_idx[None, :] < row_lengths).astype(jnp.int32)
@@ -275,12 +275,6 @@ def make_glm5_3_flash_conformance_spec() -> spec.ConformanceSpec:
               " modeling_glm5_3_flash.py:779) supports unpacked {0, 1}"
               " decoder_segment_ids only (multi-document packing with"
               " segment_ids > 1 is not yet implemented; b/585591392).",
-          ),
-          spec.CheckId.EXPERT_PARALLEL_PARITY: spec.SkipDeclaration(
-              spec.SkipStatus.NOT_APPLICABLE,
-              "Glm5Experts and Glm5MoE (modeling_glm5_3_flash.py:960-971,"
-              " 1065-1078) raise NotImplementedError when ep_size > 1 on the"
-              " 'expert' mesh axis (b/585591392).",
           ),
       },
   )
