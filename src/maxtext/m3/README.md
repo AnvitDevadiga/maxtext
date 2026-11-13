@@ -162,6 +162,43 @@ its hand-rolled attention and vision tower are not yet sharded; GLM-5.3-Flash an
 own `Sharding` subclasses and mesh construction, which should converge on `DefaultSharding` and
 `mesh_from_config`.
 
+## MoE
+
+Routed-expert blocks (`MoEExecutor` in `core/moe.py`) share dispatch across models: routers stay
+inside each model (`softmax` / `sigmoid`, top-k, routing bias, shared experts), while `moe_from_config`
+resolves a static `MoEExecutor` once at model construction (`dense`, `ragged_dot`, `tokamax`, or `gmm_v2`).
+Under `EP > 1` or `TP > 1`, `gmm_v2` and `tokamax` exchange tokens across experts via
+`jax.lax.ragged_all_to_all` inside `jax.shard_map` so routed expert weights stay sharded across
+`("experts", "expert_embed", ..., "expert_mlp")` without weight all-gathers; on CPU hosts they execute
+via `jax.lax.ragged_dot` inside `shard_map`.
+
+| `sparse_matmul` | `use_tokamax_gmm` | `use_gmm_v2`                        | `megablox` | Resolved backend                                                |
+| :-------------- | :---------------- | :---------------------------------- | :--------- | :-------------------------------------------------------------- |
+| `false`         | `false` / `true`  | `false` (or `use_tokamax_gmm=true`) | ignored    | `dense` (`einsum`)                                              |
+| `true`          | `true`            | `true`                              | ignored    | `gmm_v2` (Tokamax GMM v2 Pallas kernel on TPU)                  |
+| `true`          | `true`            | `false`                             | ignored    | `tokamax` (Tokamax v1 `ragged_dot` Pallas kernel on TPU)        |
+| `true`          | `false`           | `false`                             | `false`    | `ragged_dot` (`jax.lax.ragged_dot`; requires `EP=1` and `TP=1`) |
+| `true`          | `false`           | `false`                             | `true`     | **refused** (legacy Megablox kernel is not implemented in m3)   |
+| any             | `false`           | `true`                              | any        | **refused** (`use_gmm_v2=true` requires `use_tokamax_gmm=true`) |
+
+Flag resolution follows legacy precedence (`use_tokamax_gmm` + `use_gmm_v2` overrides `megablox`).
+Model configs that run `MoEExecutor` on TPU (`qwen3.8-flash-next`, `qwen3.8-flash-next-mini`) set
+`megablox: false`, `use_tokamax_gmm: true`, `use_gmm_v2: true` so default runs do not inherit
+`base.yml`'s `megablox: true`. `use_ragged_sort=true` enables SparseCore ragged sorting on
+`gmm_v2` / `tokamax` and is refused otherwise.
+
+Unsupported legacy MoE settings are refused by name rather than silently ignored:
+`megablox=true` (without `use_tokamax_gmm=true` on `MoEExecutor` models), `use_ring_of_experts=true`,
+`use_random_routing=true`, non-default `eval_ragged_buffer_factor` (`!= -1.0`),
+`moe_dropless_fallback` (`"step"` or `"layer"`), `use_te_grouped_gemm=true`,
+`capacity_factor=0.0`, and `ragged_buffer_factor=0.0`.
+
+Router projections, gating logits/probabilities, combine weights, and load-balancing losses run in
+`float32`; grouped expert matmuls run in compute `dtype` with `float32` accumulation (`Precision.DEFAULT`
+for `bfloat16`; `float32` operands currently use `HIGHEST` until precision delegation is aligned with
+`matmul_precision`). Quantizing MoE grouped GEMMs (`qwix` does not intercept `gmm_v2`/`tokamax`
+custom Pallas calls yet) is left for a follow-up.
+
 ## Invariants for the training-engine and RL path
 
 m3 models must be drivable both by `m3/train/loop.py` and by the existing
