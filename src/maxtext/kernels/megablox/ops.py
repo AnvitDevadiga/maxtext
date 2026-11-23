@@ -1512,16 +1512,16 @@ def _tgmm_route(
 ) -> Literal["fuser", "upstream", "fork"]:
   """Selects the TGMM v2 execution backend route.
 
-  | Condition                                              | Route      |
-  |--------------------------------------------------------|------------|
-  | 2D lhs & 2D rhs (incl. 2D partial_sum)                 | "fork"     |
-  | 3D lhs or rhs, not partial_sum, explicit aligned tiles | "fuser"    |
-  | 3D lhs or rhs with partial_sum / heuristic / unaligned | "upstream" |
+  | Condition                                                        | Route      |
+  |------------------------------------------------------------------|------------|
+  | heuristic (callable) tile_info, or 2D lhs & 2D rhs               | "fork"     |
+  | 3D lhs or rhs, not partial_sum, explicit aligned tiles           | "fuser"    |
+  | 3D lhs or rhs with explicit tiles + partial_sum / unaligned      | "upstream" |
   """
-  if lhs_ndim != 3 and rhs_ndim != 3:
-    # Plain 2D TGMM calls stay on the fork until the forked kernels are removed (b/560195193).
+  if callable(tile_info) or (lhs_ndim != 3 and rhs_ndim != 3):
+    # Plain 2D and heuristic calls stay on the fork until the forked kernels are removed (b/560195193).
     return "fork"
-  if not has_partial_sum and not callable(tile_info):
+  if not has_partial_sum:
     lhs_ok = lhs_ndim != 3 or _is_fuser_aligned_tile(tile_info.tile_k, k_dim)
     rhs_ok = rhs_ndim != 3 or _is_fuser_aligned_tile(tile_info.tile_n, n_dim)
     if lhs_ok and rhs_ok:
@@ -1589,7 +1589,7 @@ def _call_tgmm_v2(
           partial_sum=partial_sum,
           preferred_element_type=jnp.dtype(preferred_element_type),
           group_offset=_group_offset_1d(group_offset),
-          tile_info=_upstream_tiles(tile_info, up_gmm, up_tgmm.calculate_tgmm_tiling_from_request),
+          tile_info=_upstream_tiles(explicit_tiles, up_gmm),
           vmem_limit_bytes=_tpu_vmem_limit_bytes(),
       )
 

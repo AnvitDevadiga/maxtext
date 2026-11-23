@@ -162,7 +162,8 @@ class UpstreamTokamaxDispatchTest(parameterized.TestCase):
       {"testcase_name": "3d_rhs_window", "args": (2, 3, False, _TILES), "n_dim": 7168, "want": "upstream"},
       {"testcase_name": "3d_lhs_ps", "args": (3, 2, True, _TILES), "want": "upstream"},
       {"testcase_name": "3d_window_1792", "args": (3, 2, False, _W1792), "k_dim": 7168, "want": "upstream"},
-      {"testcase_name": "3d_heuristic", "args": (3, 2, False, _HEUR), "want": "upstream"},
+      {"testcase_name": "3d_heuristic", "args": (3, 2, False, _HEUR), "want": "fork"},
+      {"testcase_name": "3d_ps_heuristic", "args": (3, 2, True, _HEUR), "want": "fork"},
       {"testcase_name": "2d_only", "args": (2, 2, False, _TILES), "want": "fork"},
       {"testcase_name": "2d_only_2d_ps", "args": (2, 2, True, _TILES), "want": "fork"},
   )
@@ -172,10 +173,13 @@ class UpstreamTokamaxDispatchTest(parameterized.TestCase):
   @parameterized.named_parameters(
       {"testcase_name": "fuser", "lhs_3d": True, "want": "fuser"},
       {"testcase_name": "upstream", "lhs_3d": True, "has_ps": True, "want": "upstream"},
+      {"testcase_name": "heuristic", "lhs_3d": True, "heuristic": True, "want": "fork"},
       {"testcase_name": "fork_2d", "want": "fork"},
       {"testcase_name": "hide_fuser", "lhs_3d": True, "hide_fuser": True, "want": "fork"},
   )
-  def test_call_tgmm_v2_wiring(self, want: str, lhs_3d: bool = False, has_ps: bool = False, hide_fuser: bool = False):
+  def test_call_tgmm_v2_wiring(
+      self, want: str, lhs_3d: bool = False, has_ps: bool = False, hide_fuser: bool = False, heuristic: bool = False
+  ):
     lhs = jnp.ones((512, 8, 128) if lhs_3d else (512, 1024), jnp.bfloat16)
     rhs = jnp.ones((512, 256), jnp.bfloat16)
     gs, tiling = jnp.array([256, 256], jnp.int32), (256, 1024, 256) * 3
@@ -207,7 +211,7 @@ class UpstreamTokamaxDispatchTest(parameterized.TestCase):
           partial_sum=ps,
           preferred_element_type=jnp.bfloat16,
           tiling=tiling,
-          use_gmm_v2_heuristic_tiling=False,
+          use_gmm_v2_heuristic_tiling=heuristic,
       )
     self.assertEqual(out.shape, (2, 1024, 256))
     if want == "fuser":
@@ -230,7 +234,7 @@ class UpstreamTokamaxTpuParityTest(parameterized.TestCase):
     super().setUp()
     if jax.default_backend() != "tpu":
       self.skipTest("TPU only")
-    if ops.gmm_fuser is None or ops.op_fusion is None:
+    if ops.gmm_fuser is None or ops.op_fusion is None or ops.tokamax_tgmm_v2 is None:
       self.skipTest("needs tokamax >= 0.0.18")
 
   @parameterized.product(path=("3d_lhs_fuser", "3d_out", "3d_partial_sum"), dtype=("bf16", "fp8"))
