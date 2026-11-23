@@ -32,7 +32,9 @@ import qwix
 import qwix.pallas as qpl
 import tokamax
 
-try:  # decoupled-requirements.txt pins tokamax==0.0.12, before gmm_fuser existed.
+# Upstream routes activate only on tokamax >= 0.0.18 (first release with gmm_fuser / op_fusion);
+# older versions (e.g. decoupled-requirements.txt pinning tokamax==0.0.12) fall back to the fork.
+try:
   from tokamax._src.ops.gmm_v2 import gmm_fuser  # pylint: disable=g-import-not-at-top
   from tokamax._src.ops.gmm_v2 import gmm_v2 as tokamax_gmm_v2  # pylint: disable=g-import-not-at-top
   from tokamax.ops import op_fusion  # pylint: disable=g-import-not-at-top
@@ -588,13 +590,7 @@ def _is_fuser_aligned_tile(tile_size: int, full_dim: int | None = None, num_lane
   return tile_size == full_dim or tile_size % (8 * num_lanes) == 0
 
 
-def _upstream_tiles(
-    tile_info: gmm_v2.TileSizes | Callable[..., Any],
-    up_gmm: Any,
-    heuristic_fn: Any = None,
-):
-  if callable(tile_info):
-    return heuristic_fn if heuristic_fn is not None else up_gmm.calculate_tiling_from_request
+def _upstream_tiles(tile_info: gmm_v2.TileSizes, up_gmm: Any):
   return up_gmm.TileSizes(
       tile_m=tile_info.tile_m,
       tile_k=tile_info.tile_k,
@@ -614,17 +610,16 @@ def _gmm_route(
 ) -> Literal["fuser", "upstream", "fork"]:
   """Selects the GMM v2 execution backend route.
 
-  | Condition                                                     | Route      |
-  |---------------------------------------------------------------|------------|
-  | tail_chunks=True                                              | "fork"     |
-  | 3D lhs, not partial_sum, explicit Mosaic-aligned tile_k       | "fuser"    |
-  | out_is_3d=True, or 3D lhs with partial_sum                    | "upstream" |
-  | 2D lhs & 2D out (incl. 2D partial_sum); or 3D fused unaligned/| "fork"     |
-  | heuristic tile without out_is_3d/partial_sum                  |            |
+  | Condition                                                        | Route      |
+  |------------------------------------------------------------------|------------|
+  | tail_chunks=True or heuristic (callable) tile_info               | "fork"     |
+  | 3D lhs, not partial_sum, explicit Mosaic-aligned tile_k          | "fuser"    |
+  | out_is_3d=True, or 3D lhs with partial_sum (explicit tile_info)  | "upstream" |
+  | 2D lhs & 2D out (incl. 2D partial_sum), or 3D fused unaligned    | "fork"     |
   """
-  if tail_chunks:
+  if tail_chunks or callable(tile_info):
     return "fork"
-  if lhs_ndim == 3 and not has_partial_sum and not callable(tile_info):
+  if lhs_ndim == 3 and not has_partial_sum:
     if _is_fuser_aligned_tile(tile_info.tile_k, k_dim):
       return "fuser"
     return "upstream" if out_is_3d else "fork"
@@ -662,6 +657,7 @@ def _call_gmm_v2(
         k_dim=lhs.shape[1] * lhs.shape[2] if lhs.ndim == 3 else None,
     )
     if route == "fuser":
+      assert not callable(tile_info)
       vmem_limit_bytes = _tpu_vmem_limit_bytes()
       fuser_tiles = _upstream_tiles(tile_info, up_gmm)
       offset_1d = _group_offset_1d(group_offset)
@@ -685,6 +681,7 @@ def _call_gmm_v2(
       out = fusion.fuse(_fused_gmm)(lhs, rhs, group_sizes, rhs_scale, offset_1d, lhs_scale)
       return out.reshape(out.shape[0], out.shape[1] // 128, 128) if out_is_3d else out
     if route == "upstream":
+      assert not callable(tile_info)
       ps_2d = _to_2d(partial_sum) if partial_sum is not None else None
       out = up_gmm.gmm_v2(
           lhs=_to_2d(lhs),

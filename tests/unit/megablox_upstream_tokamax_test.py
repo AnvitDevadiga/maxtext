@@ -74,7 +74,8 @@ class UpstreamTokamaxDispatchTest(parameterized.TestCase):
       {"testcase_name": "3d_lhs_partial_sum", "args": (3, False, True, _TILES, False), "want": "upstream"},
       {"testcase_name": "3d_out_2d_lhs", "args": (2, True, False, _TILES, False), "want": "upstream"},
       {"testcase_name": "3d_out_and_ps", "args": (3, True, True, _TILES, False), "want": "upstream"},
-      {"testcase_name": "3d_out_heuristic", "args": (2, True, False, _HEUR, False), "want": "upstream"},
+      {"testcase_name": "3d_out_heuristic", "args": (2, True, False, _HEUR, False), "want": "fork"},
+      {"testcase_name": "3d_lhs_ps_heuristic", "args": (3, False, True, _HEUR, False), "want": "fork"},
       {"testcase_name": "3d_out_window_1792", "args": (3, True, False, _W1792, False), "k_dim": 7168, "want": "upstream"},
       {"testcase_name": "3d_fused_window_1792", "args": (3, False, False, _W1792, False), "k_dim": 7168, "want": "fork"},
       {"testcase_name": "3d_fused_heuristic", "args": (3, False, False, _HEUR, False), "want": "fork"},
@@ -99,11 +100,18 @@ class UpstreamTokamaxDispatchTest(parameterized.TestCase):
   @parameterized.named_parameters(
       {"testcase_name": "fuser", "lhs_shape": (512, 8, 128), "want": "fuser"},
       {"testcase_name": "upstream", "lhs_shape": (512, 8, 128), "out_is_3d": True, "ps_3d": True, "want": "upstream"},
+      {"testcase_name": "heuristic", "lhs_shape": (512, 8, 128), "out_is_3d": True, "tile_info": _HEUR, "want": "fork"},
       {"testcase_name": "fork_2d", "lhs_shape": (512, 1024), "want": "fork"},
       {"testcase_name": "hide_fuser", "lhs_shape": (512, 8, 128), "hide_fuser": True, "want": "fork"},
   )
   def test_call_gmm_v2_wiring(
-      self, lhs_shape, want: str, out_is_3d: bool = False, ps_3d: bool = False, hide_fuser: bool = False
+      self,
+      lhs_shape,
+      want: str,
+      out_is_3d: bool = False,
+      ps_3d: bool = False,
+      hide_fuser: bool = False,
+      tile_info=_TILES,
   ):
     out_shape = (512, 2, 128) if out_is_3d else (512, 256)
     lhs, rhs = jnp.ones(lhs_shape, jnp.bfloat16), jnp.ones((2, 1024, 256), jnp.bfloat16)
@@ -129,7 +137,7 @@ class UpstreamTokamaxDispatchTest(parameterized.TestCase):
           rhs=rhs,
           group_sizes=gs,
           partial_sum=ps,
-          tile_info=_TILES,
+          tile_info=tile_info,
           preferred_element_type=jnp.bfloat16,
           out_is_3d=out_is_3d,
       )
@@ -157,6 +165,8 @@ class UpstreamTokamaxTpuParityTest(parameterized.TestCase):
     super().setUp()
     if jax.default_backend() != "tpu":
       self.skipTest("TPU only")
+    if ops.gmm_fuser is None or ops.op_fusion is None:
+      self.skipTest("needs tokamax >= 0.0.18")
 
   @parameterized.product(path=("3d_lhs_fuser", "3d_out", "3d_partial_sum"), dtype=("bf16", "fp8"))
   def test_gmm_parity_vs_forked(self, path: str, dtype: str):
