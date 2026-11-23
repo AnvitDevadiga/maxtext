@@ -1451,6 +1451,10 @@ class MoEGeneral(BaseModel):
           "max all-reduce per MoE layer and token chunk, and a device-to-host fetch per step."
       ),
   )
+  log_moe_dropped_frac: bool = Field(
+      False,
+      description="Log the per-MoE-layer fraction of routed tokens dropped by the ragged buffer at the first step.",
+  )
   warmup_programs_in_init: bool = Field(
       False,
       description=(
@@ -5120,6 +5124,7 @@ FORCED_ROUTING_SUPPORTED_DECODER_BLOCKS = (
     DecoderBlockType.QWEN3_5,
     DecoderBlockType.MIXTRAL,
     DecoderBlockType.GEMMA4,
+    DecoderBlockType.DEEPSEEK41,
 )
 
 
