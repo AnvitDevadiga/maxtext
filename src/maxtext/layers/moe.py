@@ -3011,17 +3011,46 @@ class RoutedMoE(nnx.Module):
           spread_masked_indices=self.config.ragged_unsort_spread_masked_indices,
       )
     else:
-      reshaped_weights = jnp.reshape(weights, (-1, self.num_experts_per_tok)).T
-      revert_indices = jnp.reshape(jnp.argsort(sorted_selected_experts), (-1, self.num_experts_per_tok)).T.reshape(-1)
-      unsort_intermediate = _sort_activations(
-          intermediate,
-          revert_indices,
-          use_custom_sort_vjp,
+      ep_size = (
+          self.get_expert_parallelism_size()
+          if hasattr(self, "get_expert_parallelism_size")
+          else 1
       )
-      reshaped_intermediate = jnp.reshape(
-          unsort_intermediate,
-          (self.num_experts_per_tok, reshaped_weights.shape[1], -1),
+      use_transposed_combine = (
+          ep_size > 1
+          or getattr(self.config, "prefetch_fsdp_weights", False)
+          or getattr(self.config, "moe_use_direct_token_gather", False)
       )
+      if use_transposed_combine:
+        reshaped_weights = jnp.reshape(
+            weights, (-1, self.num_experts_per_tok)
+        ).T
+        revert_indices = jnp.reshape(
+            jnp.argsort(sorted_selected_experts),
+            (-1, self.num_experts_per_tok),
+        ).T.reshape(-1)
+        unsort_intermediate = _sort_activations(
+            intermediate,
+            revert_indices,
+            use_custom_sort_vjp,
+        )
+        reshaped_intermediate = jnp.reshape(
+            unsort_intermediate,
+            (self.num_experts_per_tok, reshaped_weights.shape[1], -1),
+        )
+        einsum_subscripts = "KBE,KB -> BE"
+      else:
+        unsort_intermediate = _sort_activations(
+            intermediate,
+            jnp.argsort(sorted_selected_experts),
+            use_custom_sort_vjp,
+        )
+        reshaped_weights = jnp.reshape(weights, (-1, self.num_experts_per_tok))
+        reshaped_intermediate = jnp.reshape(
+            unsort_intermediate,
+            (reshaped_weights.shape[0], self.num_experts_per_tok, -1),
+        )
+        einsum_subscripts = "BKE,BK -> BE"
       with jax.named_scope("weight_sum"):
         matmul_precision = jax.lax.Precision(self.config.matmul_precision)
         if self.config.decoder_block == ctypes.DecoderBlockType.LLAMA4:
@@ -3031,7 +3060,7 @@ class RoutedMoE(nnx.Module):
           reshaped_intermediate = reshaped_intermediate.astype(jnp.float32)
           reshaped_weights = reshaped_weights.astype(jnp.float32)
         output = jnp.einsum(
-            "KBE,KB -> BE",
+            einsum_subscripts,
             reshaped_intermediate,
             reshaped_weights,
             precision=matmul_precision,
