@@ -168,23 +168,27 @@ class UpstreamTokamaxDispatchTest(parameterized.TestCase):
       {"testcase_name": "hide_fuser", "lhs_3d": True, "hide_fuser": True, "want": "fork"},
   )
   def test_call_tgmm_v2_wiring(self, want: str, lhs_3d: bool = False, has_ps: bool = False, hide_fuser: bool = False):
-    if want != "fork" and gmm_fuser is None:
-      self.skipTest("Requires tokamax >= 0.0.18")
     lhs = jnp.ones((512, 8, 128) if lhs_3d else (512, 1024), jnp.bfloat16)
     rhs = jnp.ones((512, 256), jnp.bfloat16)
     gs, tiling = jnp.array([256, 256], jnp.int32), (256, 1024, 256) * 3
     ps = jnp.ones((2, 1024, 256), jnp.bfloat16) if has_ps else None
-    tpu_cm = mock.patch.object(ops.pltpu, "get_tpu_info", autospec=True, return_value=mock.Mock(vmem_capacity_bytes=64))
-    if hide_fuser or gmm_fuser is None:
-      fuser_cm, up_cm = mock.patch.object(ops, "gmm_fuser", None), mock.patch.object(ops, "tokamax_tgmm_v2", None)
-    else:
-      zero_out = jnp.zeros((2, 1024, 256), jnp.bfloat16)
-      fuser_cm = mock.patch.object(gmm_fuser, "_run_tgmm_v2_fusible", autospec=True, return_value=zero_out)
-      up_cm = mock.patch.object(ops.tokamax_tgmm_v2, "tgmm_v2", autospec=True, return_value=zero_out)
-    fork_cm = mock.patch.object(
-        ops.tgmm_v2, "tgmm_v2", autospec=True, return_value=jnp.ones((2, 1024, 256), jnp.bfloat16)
-    )
-    with tpu_cm, fuser_cm as f_mock, up_cm as u_mock, fork_cm as g_mock:
+    zero_out = jnp.zeros((2, 1024, 256), jnp.bfloat16)
+    # Stand-in Tokamax modules, as in test_call_gmm_v2_wiring: routing and argument wiring on any tokamax version.
+    fuser = mock.Mock(tgmm_v2_fusible=mock.Mock(return_value=zero_out))
+    up_gmm, up_tgmm = mock.Mock(), mock.Mock(tgmm_v2=mock.Mock(return_value=zero_out))
+    fusion = mock.Mock(fuse=lambda f: f)
+    if hide_fuser:
+      fuser = up_gmm = up_tgmm = fusion = None
+    with (
+        mock.patch.object(ops.pltpu, "get_tpu_info", autospec=True, return_value=mock.Mock(vmem_capacity_bytes=64)),
+        mock.patch.object(ops, "gmm_fuser", fuser),
+        mock.patch.object(ops, "tokamax_gmm_v2", up_gmm),
+        mock.patch.object(ops, "tokamax_tgmm_v2", up_tgmm),
+        mock.patch.object(ops, "op_fusion", fusion),
+        mock.patch.object(
+            ops.tgmm_v2, "tgmm_v2", autospec=True, return_value=jnp.ones((2, 1024, 256), jnp.bfloat16)
+        ) as fork,
+    ):
       out = ops._call_tgmm_v2(  # pylint: disable=protected-access
           lhs=lhs,
           rhs=rhs,
@@ -199,15 +203,15 @@ class UpstreamTokamaxDispatchTest(parameterized.TestCase):
       )
     self.assertEqual(out.shape, (2, 1024, 256))
     if want == "fuser":
-      self.assertEqual(f_mock.call_count, 2)
-      u_mock.assert_not_called()
-      g_mock.assert_not_called()
+      fuser.tgmm_v2_fusible.assert_called_once()
+      up_tgmm.tgmm_v2.assert_not_called()
+      fork.assert_not_called()
     elif want == "upstream":
-      u_mock.assert_called_once()
-      self.assertEqual(u_mock.call_args.kwargs["lhs"].shape, (512, 1024))
-      g_mock.assert_not_called()
+      up_tgmm.tgmm_v2.assert_called_once()
+      self.assertEqual(up_tgmm.tgmm_v2.call_args.kwargs["lhs"].shape, (512, 1024))
+      fork.assert_not_called()
     else:
-      g_mock.assert_called_once()
+      fork.assert_called_once()
 
 
 @pytest.mark.tpu_only
