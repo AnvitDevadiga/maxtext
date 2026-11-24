@@ -579,6 +579,8 @@ def _group_offset_1d(group_offset: jnp.ndarray | None) -> jnp.ndarray | None:
 
 def _tpu_vmem_limit_bytes() -> int | None:
   try:
+    # Exceeds Tokamax's 0.90 default: upstream gmm_v2 triple-buffers rhs (~59 MiB total for
+    # FP8 512x7168x2048 vs 57.6 MiB at 0.90 on 64 MiB TPU7x).
     return int(0.96 * pltpu.get_tpu_info().vmem_capacity_bytes)
   except ValueError:
     # CPU unit tests without an abstract TPU mesh cannot query TPU VMEM capacity.
@@ -587,7 +589,9 @@ def _tpu_vmem_limit_bytes() -> int | None:
 
 def _is_fuser_aligned_tile(tile_size: int, full_dim: int | None = None, num_lanes: int = 128) -> bool:
   """Returns whether Mosaic accepts fused 3D HBM slices on (M, D0, 128) for `tile_size`."""
-  return tile_size == full_dim or tile_size % (8 * num_lanes) == 0
+  if tile_size <= 0 or (full_dim is not None and full_dim <= 0):
+    return False
+  return tile_size == full_dim or (tile_size % (8 * num_lanes) == 0 and (full_dim is None or full_dim % tile_size == 0))
 
 
 def _upstream_tiles(tile_info: gmm_v2.TileSizes, up_gmm: Any):
@@ -613,17 +617,15 @@ def _gmm_route(
   | Condition                                                        | Route      |
   |------------------------------------------------------------------|------------|
   | tail_chunks=True or heuristic (callable) tile_info               | "fork"     |
-  | 3D lhs, not partial_sum, explicit Mosaic-aligned tile_k          | "fuser"    |
-  | out_is_3d=True, or 3D lhs with partial_sum (explicit tile_info)  | "upstream" |
-  | 2D lhs & 2D out (incl. 2D partial_sum), or 3D fused unaligned    | "fork"     |
+  | 3D lhs, not partial_sum, explicit full_dim or aligned divisor    | "fuser"    |
+  | Remaining 3D calls (out_is_3d, 3D partial_sum, unaligned tile_k) | "upstream" |
+  | Plain 2D calls (lhs_ndim == 2, not out_is_3d, incl. 2D ps)       | "fork"     |
   """
   if tail_chunks or callable(tile_info):
     return "fork"
-  if lhs_ndim == 3 and not has_partial_sum:
-    if _is_fuser_aligned_tile(tile_info.tile_k, k_dim):
-      return "fuser"
-    return "upstream" if out_is_3d else "fork"
-  if out_is_3d or (lhs_ndim == 3 and has_partial_sum):
+  if lhs_ndim == 3 and not has_partial_sum and _is_fuser_aligned_tile(tile_info.tile_k, k_dim):
+    return "fuser"
+  if lhs_ndim == 3 or out_is_3d:
     return "upstream"
   # Plain 2D calls (including 2D partial_sum) stay on the fork until the forked kernels are removed (b/560195193).
   return "fork"
