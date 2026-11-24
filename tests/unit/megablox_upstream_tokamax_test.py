@@ -77,7 +77,36 @@ class UpstreamTokamaxDispatchTest(parameterized.TestCase):
       {"testcase_name": "3d_out_heuristic", "args": (2, True, False, _HEUR, False), "want": "fork"},
       {"testcase_name": "3d_lhs_ps_heuristic", "args": (3, False, True, _HEUR, False), "want": "fork"},
       {"testcase_name": "3d_out_window_1792", "args": (3, True, False, _W1792, False), "k_dim": 7168, "want": "upstream"},
-      {"testcase_name": "3d_fused_window_1792", "args": (3, False, False, _W1792, False), "k_dim": 7168, "want": "fork"},
+      {
+          "testcase_name": "3d_fused_window_1792",
+          "args": (3, False, False, _W1792, False),
+          "k_dim": 7168,
+          "want": "upstream",
+      },
+      {
+          "testcase_name": "3d_lhs_nondiv_1536",
+          "args": (3, False, False, _TILES, False),
+          "k_dim": 1536,
+          "want": "upstream",
+      },
+      {
+          "testcase_name": "3d_lhs_nondiv_2048",
+          "args": (3, False, False, forked_gmm_v2.TileSizes(256, 2048, 256), False),
+          "k_dim": 7168,
+          "want": "upstream",
+      },
+      {
+          "testcase_name": "3d_lhs_oversized_512",
+          "args": (3, False, False, _TILES, False),
+          "k_dim": 512,
+          "want": "upstream",
+      },
+      {
+          "testcase_name": "3d_lhs_zero_tile",
+          "args": (3, False, False, forked_gmm_v2.TileSizes(256, 0, 256), False),
+          "k_dim": 1024,
+          "want": "upstream",
+      },
       {"testcase_name": "3d_fused_heuristic", "args": (3, False, False, _HEUR, False), "want": "fork"},
       {"testcase_name": "tail_chunks", "args": (3, False, False, _TILES, True), "want": "fork"},
       {"testcase_name": "2d_only", "args": (2, False, False, _TILES, False), "want": "fork"},
@@ -237,22 +266,27 @@ class UpstreamTokamaxTpuParityTest(parameterized.TestCase):
     if ops.gmm_fuser is None or ops.op_fusion is None or ops.tokamax_tgmm_v2 is None:
       self.skipTest("needs tokamax >= 0.0.18")
 
-  @parameterized.product(path=("3d_lhs_fuser", "3d_out", "3d_partial_sum"), dtype=("bf16", "fp8"))
+  @parameterized.product(path=("3d_lhs_fuser", "3d_lhs_window", "3d_out", "3d_partial_sum"), dtype=("bf16", "fp8"))
   def test_gmm_parity_vs_forked(self, path: str, dtype: str):
     high_vmem = path == "3d_lhs_fuser" and dtype == "fp8" and pltpu.get_tpu_info().vmem_capacity_bytes >= 64 * 1024 * 1024
-    m, k, n, g = (2048, 7168, 2048, 16) if high_vmem else (2048, 2048, 1024, 4)
-    tile_k = k if high_vmem else 1024
+    if path == "3d_lhs_window":
+      m, k, n, g, tile_k = 2048, 7168, 1024, 4, _W1792.tile_k
+    elif high_vmem:
+      m, k, n, g, tile_k = 2048, 7168, 2048, 16, 7168
+    else:
+      m, k, n, g, tile_k = 2048, 2048, 1024, 4, 1024
     gs = jnp.full((g,), m // g, jnp.int32) if high_vmem else jnp.array([300, 0, 517, 700], jnp.int32)
     tiling = (512, tile_k, n) * 3
     k0, k1, k2 = jax.random.split(jax.random.key(11), 3)
     lhs_shape = (m, n) if path == "3d_partial_sum" else (m, k)
     x_raw, w_raw = _rand(k0, lhs_shape, jnp.bfloat16), _rand(k1, (g, k, n), jnp.bfloat16, 0.05)
 
+    is_3d_lhs = path in ("3d_lhs_fuser", "3d_lhs_window")
     if dtype == "fp8":
       xq = _q_fp8(x_raw, [])
       wq = _q_fp8(w_raw, [] if path == "3d_partial_sum" else [0, 2])
       lhs_in = qpl.QArray(
-          qvalue=_to3d(xq.qvalue) if path == "3d_lhs_fuser" else xq.qvalue,
+          qvalue=_to3d(xq.qvalue) if is_3d_lhs else xq.qvalue,
           scale=xq.scale,
           zero_point=None,
           qtype=xq.qtype,
@@ -264,7 +298,7 @@ class UpstreamTokamaxTpuParityTest(parameterized.TestCase):
       )
       dlhs_scale = wq.scale
     else:
-      lhs_in = _to3d(x_raw) if path == "3d_lhs_fuser" else x_raw
+      lhs_in = _to3d(x_raw) if is_3d_lhs else x_raw
       rhs_in, dlhs_scale = w_raw, None
 
     if path == "3d_partial_sum":
