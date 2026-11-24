@@ -4,17 +4,20 @@
 
 # Usage:
 # export RUN_ID=$(date +%Y-%m-%d-%H-%M-%S)
-# bash test_llama3.1_70b_to_hf.sh $RUN_ID $CHECKPOINT_PATH $USE_MULTIMODAL $SCAN_LAYERS
+# bash tests/end_to_end/cpu/llama3.1/70b/test_llama3.1_70b_to_hf.sh $RUN_ID $CHECKPOINT_PATH $USE_MULTIMODAL $SCAN_LAYERS
 
 set -ex
 
-run_id=$1
-CKPT_PATH=$2
+# Avoid conflict between M_RUN_NAME env var and CLI run_name argument in pyconfig
+unset M_RUN_NAME
+
+run_id=${1:?"Error: run_id (argument 1) is required"}
+CKPT_PATH=${2:?"Error: CKPT_PATH (argument 2) is required"}
 USE_MULTIMODAL=${3:-false}
 SCAN_LAYERS=${4:-false}
 
 MODEL_NAME='llama3.1-70b'
-BASE_OUTPUT_DIRECTORY="gs://runner-maxtext-logs/${MODEL_NAME}"
+BASE_OUTPUT_DIRECTORY="${BASE_OUTPUT_DIRECTORY:-gs://runner-maxtext-logs/${MODEL_NAME}}"
 
 if [ "${SCAN_LAYERS,,}" = "true" ]; then
     scan_status="scanned"
@@ -33,4 +36,5 @@ python3 -m maxtext.checkpoint_conversion.to_huggingface \
     checkpoint_storage_use_zarr3=False \
     checkpoint_storage_use_ocdbt=False \
     checkpoint_storage_concurrent_gb=48 \
+    hardware=cpu \
     skip_jax_distributed_system=true
